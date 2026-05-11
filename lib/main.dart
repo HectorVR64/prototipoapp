@@ -1,6 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 
-void main() => runApp(const MiAppFinanzas());
+void main() async {
+  // Inicialización de la base de datos local
+  WidgetsFlutterBinding.ensureInitialized();
+  await Hive.initFlutter();
+  
+  // Abrimos la "caja" para persistencia de datos
+  await Hive.openBox('caja_finanzas');
+  
+  runApp(const MiAppFinanzas());
+}
 
 class MiAppFinanzas extends StatelessWidget {
   const MiAppFinanzas({super.key});
@@ -26,13 +36,50 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
   // --- VARIABLES DE ESTADO ---
   double _dineroTotalEnCuenta = 0.0;
   String _numeroQueEstoyEscribiendo = "0";
-
   String _nombreCategoriaElegida = "Comida";
   IconData _iconoCategoriaElegida = Icons.restaurant;
 
-  final List<Map<String, dynamic>> _listaDeMovimientos = [];
+  final _miCaja = Hive.box('caja_finanzas');
+  List<Map<String, dynamic>> _listaDeMovimientos = [];
 
-  // --- FUNCIONES DE LÓGICA ---
+  @override
+  void initState() {
+    super.initState();
+    _cargarDatosDeLaMemoria();
+  }
+
+  // --- LÓGICA DE BASE DE DATOS ---
+
+  void _cargarDatosDeLaMemoria() {
+    final datosGuardados = _miCaja.get('historial', defaultValue: []);
+    setState(() {
+      _listaDeMovimientos = List<Map<String, dynamic>>.from(
+        datosGuardados.map((item) => Map<String, dynamic>.from(item))
+      );
+      _recalculateSaldo();
+    });
+  }
+
+  void _recalculateSaldo() {
+    double saldoTemporal = 0.0;
+    for (var movimiento in _listaDeMovimientos) {
+      double monto = movimiento['monto'];
+      if (movimiento['esGasto']) {
+        saldoTemporal -= monto;
+      } else {
+        saldoTemporal += monto;
+      }
+    }
+    _dineroTotalEnCuenta = saldoTemporal;
+  }
+
+  void _guardarPermanentemente() {
+    _miCaja.put('historial', _listaDeMovimientos);
+    _recalculateSaldo();
+    setState(() {});
+  }
+
+  // --- LÓGICA DE INTERFAZ ---
 
   void _seleccionarNuevaCategoria(String nombre, IconData icono) {
     setState(() {
@@ -45,10 +92,7 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
     setState(() {
       if (valorTecla == "⌫") {
         if (_numeroQueEstoyEscribiendo.length > 1) {
-          _numeroQueEstoyEscribiendo = _numeroQueEstoyEscribiendo.substring(
-            0,
-            _numeroQueEstoyEscribiendo.length - 1,
-          );
+          _numeroQueEstoyEscribiendo = _numeroQueEstoyEscribiendo.substring(0, _numeroQueEstoyEscribiendo.length - 1);
         } else {
           _numeroQueEstoyEscribiendo = "0";
         }
@@ -60,128 +104,122 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
     });
   }
 
-  void _finalizarYRegistrarGasto() {
+  void _finalizarYRegistrarGasto() async {
     double cantidadAGastar = double.tryParse(_numeroQueEstoyEscribiendo) ?? 0;
     if (cantidadAGastar <= 0) return;
 
+    // Diálogo para especificar detalle (Siempre se pregunta ahora)
+    String? detalleIngresado = await _pedirEspecificacion(
+      "Detalle de $_nombreCategoriaElegida", 
+      "¿En qué gastaste exactamente?"
+    );
+
+    String especificacionFinal = (detalleIngresado == null || detalleIngresado.trim().isEmpty) 
+        ? _nombreCategoriaElegida 
+        : detalleIngresado;
+
     setState(() {
-      _dineroTotalEnCuenta -= cantidadAGastar;
       _listaDeMovimientos.insert(0, {
-        "texto": "$_nombreCategoriaElegida \$$cantidadAGastar",
+        "texto": "$especificacionFinal \$$cantidadAGastar",
         "monto": cantidadAGastar,
-        "icono": _iconoCategoriaElegida,
+        "icono": _iconoCategoriaElegida.codePoint,
         "esGasto": true,
       });
       _numeroQueEstoyEscribiendo = "0";
+      _guardarPermanentemente();
     });
   }
 
-  // FUNCIÓN PARA ELIMINAR REGISTRO
+  Future<String?> _pedirEspecificacion(String titulo, String sugerencia) {
+    TextEditingController controlador = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text(titulo),
+        content: TextField(
+          controller: controlador, 
+          autofocus: true, 
+          textCapitalization: TextCapitalization.sentences,
+          decoration: InputDecoration(hintText: sugerencia)
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, ""), child: const Text("Omitir")),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF528F8F)),
+            onPressed: () => Navigator.pop(context, controlador.text), 
+            child: const Text("Guardar", style: TextStyle(color: Colors.white))
+          ),
+        ],
+      ),
+    );
+  }
+
   void _eliminarRegistro(int indice) {
-    final movimiento = _listaDeMovimientos[indice];
-    double monto = movimiento["monto"];
-    bool esGasto = movimiento["esGasto"];
-
     setState(() {
-      if (esGasto) {
-        _dineroTotalEnCuenta += monto; // Reembolsar
-      } else {
-        _dineroTotalEnCuenta -= monto; // Quitar ingreso
-      }
       _listaDeMovimientos.removeAt(indice);
+      _guardarPermanentemente();
     });
   }
 
-  // --- NUEVA FUNCIÓN: MENÚ ESTILO WHATSAPP ---
-  void _mostrarMenuOpciones(
-    BuildContext contexto,
-    Offset posicionGlobal,
-    int indice,
-  ) async {
+  void _mostrarMenuOpciones(BuildContext contexto, Offset posicionGlobal, int indice) async {
     final resultado = await showMenu(
       context: contexto,
-      position: RelativeRect.fromLTRB(
-        posicionGlobal.dx,
-        posicionGlobal.dy,
-        posicionGlobal.dx + 1,
-        posicionGlobal.dy + 1,
-      ),
+      position: RelativeRect.fromLTRB(posicionGlobal.dx, posicionGlobal.dy, posicionGlobal.dx + 1, posicionGlobal.dy + 1),
       items: [
         const PopupMenuItem(
-          value: 'eliminar',
-          child: Row(
-            children: [
-              Icon(Icons.delete, color: Colors.red),
-              SizedBox(width: 10),
-              Text("Eliminar", style: TextStyle(color: Colors.red)),
-            ],
-          ),
+          value: 'eliminar', 
+          child: Row(children: [Icon(Icons.delete, color: Colors.red), SizedBox(width: 10), Text("Eliminar")])
         ),
       ],
     );
-
-    if (resultado == 'eliminar') {
-      _eliminarRegistro(indice);
-    }
+    if (resultado == 'eliminar') _eliminarRegistro(indice);
   }
 
   void _abrirPanelDeIngreso() {
-    TextEditingController controladorDeTexto = TextEditingController();
+    TextEditingController controladorMonto = TextEditingController();
+    TextEditingController controladorNota = TextEditingController();
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
-      ),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(25))),
       builder: (context) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(context).viewInsets.bottom,
-          top: 20,
-          left: 20,
-          right: 20,
-        ),
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, top: 20, left: 20, right: 20),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text(
-              "Registrar Ingreso 💰",
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            const Text("Registrar Ingreso 💰", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            TextField(
+              controller: controladorMonto, 
+              keyboardType: TextInputType.number, 
+              decoration: const InputDecoration(labelText: "¿Cuánto dinero entró?", prefixText: "\$ ")
             ),
             TextField(
-              controller: controladorDeTexto,
-              keyboardType: TextInputType.number,
-              autofocus: true,
-              decoration: const InputDecoration(
-                labelText: "¿Cuánto dinero entró?",
-                prefixText: "\$ ",
-              ),
+              controller: controladorNota, 
+              textCapitalization: TextCapitalization.sentences,
+              decoration: const InputDecoration(labelText: "Concepto (Ej: Sueldo, Beca...)")
             ),
             const SizedBox(height: 20),
             ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF528F8F),
-                minimumSize: const Size(double.infinity, 50),
-              ),
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF528F8F), minimumSize: const Size(double.infinity, 50)),
               onPressed: () {
-                double montoEntrante =
-                    double.tryParse(controladorDeTexto.text) ?? 0;
-                if (montoEntrante > 0) {
+                double monto = double.tryParse(controladorMonto.text) ?? 0;
+                String nota = controladorNota.text.isEmpty ? "Ingreso" : controladorNota.text;
+                if (monto > 0) {
                   setState(() {
-                    _dineroTotalEnCuenta += montoEntrante;
                     _listaDeMovimientos.insert(0, {
-                      "texto": "Ingreso: +\$$montoEntrante",
-                      "monto": montoEntrante,
-                      "icono": Icons.add_card,
+                      "texto": "$nota: +\$$monto",
+                      "monto": monto,
+                      "icono": Icons.add_card.codePoint,
                       "esGasto": false,
                     });
+                    _guardarPermanentemente();
                   });
                   Navigator.pop(context);
                 }
               },
-              child: const Text(
-                "Sumar a mi Cartera",
-                style: TextStyle(color: Colors.white),
-              ),
+              child: const Text("Sumar al Saldo", style: TextStyle(color: Colors.white)),
             ),
             const SizedBox(height: 20),
           ],
@@ -197,82 +235,32 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
       body: SafeArea(
         child: Column(
           children: [
-            // 1. Barra Superior
             Container(
               padding: const EdgeInsets.all(15),
-              decoration: const BoxDecoration(
-                color: Color(0xFF528F8F),
-                borderRadius: BorderRadius.vertical(
-                  bottom: Radius.circular(30),
-                ),
-              ),
-              child: const Center(
-                child: Text(
-                  "Control de Mis Gastos",
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
+              decoration: const BoxDecoration(color: Color(0xFF528F8F), borderRadius: BorderRadius.vertical(bottom: Radius.circular(30))),
+              child: const Center(child: Text("Control de Mis Gastos", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold))),
             ),
-
-            // 2. Sección Central
             Expanded(
               child: Column(
                 children: [
                   const SizedBox(height: 15),
-                  const Text(
-                    "Saldo disponible actualmente:",
-                    style: TextStyle(color: Colors.grey),
-                  ),
+                  const Text("Saldo disponible:", style: TextStyle(color: Colors.grey)),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Text(
-                        "\$${_dineroTotalEnCuenta.toStringAsFixed(2)}",
-                        style: const TextStyle(
-                          fontSize: 45,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF425C5C),
-                        ),
-                      ),
-                      IconButton(
-                        onPressed: _abrirPanelDeIngreso,
-                        icon: const Icon(
-                          Icons.add_circle,
-                          color: Color(0xFF528F8F),
-                          size: 35,
-                        ),
-                      ),
+                      Text("\$${_dineroTotalEnCuenta.toStringAsFixed(2)}", style: const TextStyle(fontSize: 45, fontWeight: FontWeight.bold, color: Color(0xFF425C5C))),
+                      IconButton(onPressed: _abrirPanelDeIngreso, icon: const Icon(Icons.add_circle, color: Color(0xFF528F8F), size: 35)),
                     ],
                   ),
-                  Text(
-                    "Escribiendo: \$$_numeroQueEstoyEscribiendo",
-                    style: const TextStyle(
-                      fontSize: 18,
-                      color: Colors.redAccent,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                  Text("Tecleando: \$$_numeroQueEstoyEscribiendo", style: const TextStyle(fontSize: 18, color: Colors.redAccent, fontWeight: FontWeight.bold)),
                   const Divider(),
-
-                  // Listado con interacción mejorada
                   Expanded(
                     child: ListView.builder(
                       padding: const EdgeInsets.symmetric(horizontal: 20),
                       itemCount: _listaDeMovimientos.length,
                       itemBuilder: (context, posicion) {
                         return GestureDetector(
-                          // Detectamos la posición exacta del toque para mostrar el menú ahí
-                          onLongPressStart: (detalles) {
-                            _mostrarMenuOpciones(
-                              context,
-                              detalles.globalPosition,
-                              posicion,
-                            );
-                          },
+                          onLongPressStart: (detalles) => _mostrarMenuOpciones(context, detalles.globalPosition, posicion),
                           child: _dibujarBurbuja(_listaDeMovimientos[posicion]),
                         );
                       },
@@ -281,15 +269,8 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
                 ],
               ),
             ),
-
-            // 3. Barra de Categorías
             _construirBarraDeCategorias(),
-
-            // 4. Teclado
-            WidgetTecladoPropio(
-              alTocarNumero: _logicaDelTeclado,
-              alConfirmarTodo: _finalizarYRegistrarGasto,
-            ),
+            WidgetTecladoPropio(alTocarNumero: _logicaDelTeclado, alConfirmarTodo: _finalizarYRegistrarGasto),
           ],
         ),
       ),
@@ -300,17 +281,15 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       padding: const EdgeInsets.symmetric(vertical: 8),
-      decoration: BoxDecoration(
-        border: Border.all(color: Colors.grey.shade300),
-        borderRadius: BorderRadius.circular(20),
-      ),
+      decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(20)),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
           _crearBotonDeIcono(Icons.restaurant, "Comida"),
           _crearBotonDeIcono(Icons.directions_car, "Transporte"),
-          _crearBotonDeIcono(Icons.videogame_asset, "Ocio"),
           _crearBotonDeIcono(Icons.home, "Casa"),
+          _crearBotonDeIcono(Icons.videogame_asset, "Ocio"),
+          _crearBotonDeIcono(Icons.more_horiz, "Otros"),
         ],
       ),
     );
@@ -324,24 +303,10 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
         children: [
           Container(
             padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: seleccionado
-                  ? const Color(0xFF528F8F)
-                  : Colors.grey.shade100,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              elIcono,
-              color: seleccionado ? Colors.white : Colors.black45,
-            ),
+            decoration: BoxDecoration(color: seleccionado ? const Color(0xFF528F8F) : Colors.grey.shade100, shape: BoxShape.circle),
+            child: Icon(elIcono, color: seleccionado ? Colors.white : Colors.black45),
           ),
-          Text(
-            elNombre,
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: seleccionado ? FontWeight.bold : FontWeight.normal,
-            ),
-          ),
+          Text(elNombre, style: TextStyle(fontSize: 10, fontWeight: seleccionado ? FontWeight.bold : FontWeight.normal)),
         ],
       ),
     );
@@ -354,21 +319,15 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
         padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: esGasto ? const Color(0xFFD2C1B0) : const Color(0xFFB2D7D7),
-          borderRadius: BorderRadius.circular(15),
-        ),
+        decoration: BoxDecoration(color: esGasto ? const Color(0xFFD2C1B0) : const Color(0xFFB2D7D7), borderRadius: BorderRadius.circular(15)),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (!esGasto) Icon(datosDeBurbuja["icono"], size: 18),
+            if (!esGasto) Icon(IconData(datosDeBurbuja["icono"], fontFamily: 'MaterialIcons'), size: 18),
             const SizedBox(width: 8),
-            Text(
-              datosDeBurbuja["texto"],
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
+            Text(datosDeBurbuja["texto"], style: const TextStyle(fontWeight: FontWeight.w600)),
             const SizedBox(width: 8),
-            if (esGasto) Icon(datosDeBurbuja["icono"], size: 18),
+            if (esGasto) Icon(IconData(datosDeBurbuja["icono"], fontFamily: 'MaterialIcons'), size: 18),
           ],
         ),
       ),
@@ -376,65 +335,36 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
   }
 }
 
-// --- CLASE DEL TECLADO ---
 class WidgetTecladoPropio extends StatelessWidget {
   final Function(String) alTocarNumero;
   final VoidCallback alConfirmarTodo;
-  const WidgetTecladoPropio({
-    super.key,
-    required this.alTocarNumero,
-    required this.alConfirmarTodo,
-  });
+  const WidgetTecladoPropio({super.key, required this.alTocarNumero, required this.alConfirmarTodo});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Column(
-        children: [
-          _crearFilaTeclado(['1', '2', '3']),
-          _crearFilaTeclado(['4', '5', '6']),
-          _crearFilaTeclado(['7', '8', '9']),
-          _crearFilaTeclado(['', '0', '⌫']),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
-            child: ElevatedButton(
-              onPressed: alConfirmarTodo,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF528F8F),
-                minimumSize: const Size(double.infinity, 50),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(25),
-                ),
-              ),
-              child: const Text(
-                "REGISTRAR GASTO AHORA",
-                style: TextStyle(color: Colors.white, fontSize: 16),
-              ),
-            ),
+    return Column(
+      children: [
+        _crearFilaTeclado(['1', '2', '3']),
+        _crearFilaTeclado(['4', '5', '6']),
+        _crearFilaTeclado(['7', '8', '9']),
+        _crearFilaTeclado(['', '0', '⌫']),
+        Padding(
+          padding: const EdgeInsets.all(10),
+          child: ElevatedButton(
+            onPressed: alConfirmarTodo,
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF528F8F), minimumSize: const Size(double.infinity, 50), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25))),
+            child: const Text("REGISTRAR GASTO AHORA", style: TextStyle(color: Colors.white, fontSize: 16)),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
   Widget _crearFilaTeclado(List<String> listaDeTeclas) {
     return Row(
-      children: listaDeTeclas
-          .map(
-            (caracter) => Expanded(
-              child: TextButton(
-                onPressed: caracter.isEmpty
-                    ? null
-                    : () => alTocarNumero(caracter),
-                child: Text(
-                  caracter,
-                  style: const TextStyle(fontSize: 24, color: Colors.black87),
-                ),
-              ),
-            ),
-          )
-          .toList(),
+      children: listaDeTeclas.map((caracter) => Expanded(
+        child: TextButton(onPressed: caracter.isEmpty ? null : () => alTocarNumero(caracter), child: Text(caracter, style: const TextStyle(fontSize: 24, color: Colors.black87))),
+      )).toList(),
     );
   }
 }
