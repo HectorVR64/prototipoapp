@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:fl_chart/fl_chart.dart';
+import 'grafica.dart'; // Asegúrate de que el archivo con el código de tu compañera se llame exactamente grafica.dart
 
 void main() async {
   // Inicialización de la base de datos local
@@ -39,7 +41,7 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
   String _nombreCategoriaElegida = "Comida";
   IconData _iconoCategoriaElegida = Icons.restaurant;
 
-  // Guarda el filtro activo actual
+  // Filtro activo actual
   String _filtroSeleccionado = "Todos";
 
   final _miCaja = Hive.box('caja_finanzas');
@@ -92,19 +94,25 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
       return _listaDeMovimientos.where((m) => m["esGasto"] == true).toList();
     } else {
       return _listaDeMovimientos.where((m) {
-        if (!m["esGasto"]) return false;
+        if (!m["esGasto"]) {
+          return false;
+        }
 
         int iconoCodigo = m["icono"];
         String categoriaDelMovimiento = "Otros";
 
-        if (iconoCodigo == Icons.restaurant.codePoint)
+        if (iconoCodigo == Icons.restaurant.codePoint) {
           categoriaDelMovimiento = "Comida";
-        if (iconoCodigo == Icons.directions_car.codePoint)
+        }
+        if (iconoCodigo == Icons.directions_car.codePoint) {
           categoriaDelMovimiento = "Transporte";
-        if (iconoCodigo == Icons.home.codePoint)
+        }
+        if (iconoCodigo == Icons.home.codePoint) {
           categoriaDelMovimiento = "Casa";
-        if (iconoCodigo == Icons.videogame_asset.codePoint)
+        }
+        if (iconoCodigo == Icons.videogame_asset.codePoint) {
           categoriaDelMovimiento = "Ocio";
+        }
 
         return categoriaDelMovimiento == _filtroSeleccionado;
       }).toList();
@@ -159,6 +167,7 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
         "monto": cantidadAGastar,
         "icono": _iconoCategoriaElegida.codePoint,
         "esGasto": true,
+        "categoria": _nombreCategoriaElegida,
       });
       _numeroQueEstoyEscribiendo = "0";
       _filtroSeleccionado = "Todos";
@@ -270,6 +279,7 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
                     "monto": nuevoMonto,
                     "icono": movimiento["icono"],
                     "esGasto": esGasto,
+                    "categoria": movimiento["categoria"],
                   };
                   _guardarPermanentemente();
                 });
@@ -293,7 +303,6 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
   ) async {
     final resultado = await showMenu(
       context: contexto,
-      // Corregido aquí: se usa posicionGlobal completo sin abreviaciones erróneas
       position: RelativeRect.fromLTRB(
         posicionGlobal.dx,
         posicionGlobal.dy,
@@ -465,23 +474,46 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
       body: SafeArea(
         child: Column(
           children: [
+            // BARRA SUPERIOR ELEGANTE: Organiza el título y el botón de gráfica limpia
             Container(
-              padding: const EdgeInsets.all(15),
+              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
               decoration: const BoxDecoration(
                 color: Color(0xFF528F8F),
                 borderRadius: BorderRadius.vertical(
                   bottom: Radius.circular(30),
                 ),
               ),
-              child: const Center(
-                child: Text(
-                  "Control de Mis Gastos",
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const SizedBox(
+                    width: 40,
+                  ), // Balance equilibrado para centrar el texto
+                  const Text(
+                    "Control de Mis Gastos",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                ),
+                  IconButton(
+                    icon: const Icon(
+                      Icons.pie_chart,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) =>
+                              PantallaGrafica(movimientos: _listaDeMovimientos),
+                        ),
+                      );
+                    },
+                  ),
+                ],
               ),
             ),
             Expanded(
@@ -521,10 +553,8 @@ class _EstadoDeMiPantalla extends State<PantallaDelPrototipo> {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-
                   _construirBarraDeFiltros(),
                   const Divider(),
-
                   Expanded(
                     child: movimientosFiltrados.isEmpty
                         ? const Center(
